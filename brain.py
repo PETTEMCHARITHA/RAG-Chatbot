@@ -2,6 +2,13 @@ import re
 from io import BytesIO
 from typing import Tuple, List
 import os
+import warnings
+
+# Disable ChromaDB telemetry to prevent errors
+os.environ["ANONYMIZED_TELEMETRY"] = "False"
+
+# Suppress PDF warnings
+warnings.filterwarnings("ignore", category=UserWarning, module="pypdf")
 
 from langchain.docstore.document import Document
 from langchain.text_splitter import RecursiveCharacterTextSplitter
@@ -11,7 +18,8 @@ from pypdf import PdfReader
 
 
 def parse_pdf(file: BytesIO, filename: str) -> Tuple[List[str], str]:
-    pdf = PdfReader(file)
+    # Use strict=False to handle corrupted/malformed PDFs
+    pdf = PdfReader(file, strict=False)
     output = []
     for page in pdf.pages:
         text = page.extract_text()
@@ -50,9 +58,10 @@ def text_to_docs(text: List[str], filename: str) -> List[Document]:
 
 def docs_to_index(docs, gemini_api_key=None):
     """Create Chroma vector store from documents using HuggingFace embeddings."""
-    # Use HuggingFace embeddings (free, no API key needed)
+    # Use HuggingFace embeddings with explicit CPU device
     embeddings = HuggingFaceEmbeddings(
-        model_name="sentence-transformers/all-MiniLM-L6-v2"
+        model_name="sentence-transformers/all-MiniLM-L6-v2",
+        model_kwargs={'device': 'cpu'}
     )
     
     # Create Chroma vector store
@@ -66,8 +75,24 @@ def docs_to_index(docs, gemini_api_key=None):
 
 def get_index_for_pdf(pdf_files, pdf_names, gemini_api_key):
     documents = []
+    failed_pdfs = []
+    
     for pdf_file, pdf_name in zip(pdf_files, pdf_names):
-        text, filename = parse_pdf(BytesIO(pdf_file), pdf_name)
-        documents = documents + text_to_docs(text, filename)
+        try:
+            text, filename = parse_pdf(BytesIO(pdf_file), pdf_name)
+            if text:  # Only add if we got some text
+                documents = documents + text_to_docs(text, filename)
+            else:
+                failed_pdfs.append(pdf_name)
+        except Exception as e:
+            print(f"  ⚠️ Skipping {pdf_name}: {str(e)}")
+            failed_pdfs.append(pdf_name)
+    
+    if not documents:
+        raise Exception(f"No valid documents could be parsed from {len(pdf_files)} PDFs")
+    
+    if failed_pdfs:
+        print(f"  ℹ️ Successfully parsed {len(pdf_files) - len(failed_pdfs)}/{len(pdf_files)} PDFs")
+    
     index = docs_to_index(documents, gemini_api_key)
     return index

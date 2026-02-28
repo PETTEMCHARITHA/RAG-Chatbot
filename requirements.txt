@@ -1,5 +1,14 @@
+flask
+flask-cors
+werkzeug
 langchain
 langchain-google-genai
 faiss-cpu
 pypdf
 tiktoken
+chromadb
+langchain-community
+langchain-huggingface
+huggingface-hub
+sentence-transformers
+google-generativeai

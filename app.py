@@ -7,7 +7,7 @@ import os
 st.title("RAG enhanced Chatbot")
 
 # Set up the Gemini API key
-GEMINI_API_KEY = "AIzaSyBHx-obGadGbYhfGdayRBTIeC9MG8l8jRc"
+GEMINI_API_KEY = "AIzaSyB0hiP-b8UFIZgnLrxQhyMQhJCMWA7m5UA"
 os.environ["GOOGLE_API_KEY"] = GEMINI_API_KEY
 
 import google.generativeai as genai
@@ -95,15 +95,19 @@ if question:
     response = []
     result = ""
     
-    model = genai.GenerativeModel("gemini-2.5-flash")
+    model = genai.GenerativeModel("gemini-2.0-flash")
     chat = model.start_chat(history=[])
     
-    for chunk in chat.send_message(prompt[-1]["content"], stream=True):
-        text = chunk.text
-        if text is not None:
-            response.append(text)
-            result = "".join(response).strip()
-            botmsg.write(result)
+    try:
+        for chunk in chat.send_message(prompt[-1]["content"], stream=True):
+            if hasattr(chunk, 'text') and chunk.text:
+                text = chunk.text
+                response.append(text)
+                result = "".join(response).strip()
+                botmsg.write(result)
+    except ValueError as e:
+        result = "I couldn't generate a response. Please try rephrasing your question or uploading a different PDF."
+        botmsg.write(result)
 
     # Add the assistant's response to the prompt
     prompt.append({"role": "assistant", "content": result})
