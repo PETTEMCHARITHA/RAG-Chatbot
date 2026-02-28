@@ -13,6 +13,8 @@ import config
 import uuid
 import glob
 from io import BytesIO
+from email_service import initialize_email_service, get_email_service, should_send_email
+from scheduled_tasks import initialize_scheduler
 
 app = Flask(__name__, static_folder='frontend', static_url_path='')
 
@@ -29,6 +31,9 @@ CORS(app, resources={
 GEMINI_API_KEY = config.GEMINI_API_KEY
 os.environ["GOOGLE_API_KEY"] = GEMINI_API_KEY
 genai.configure(api_key=GEMINI_API_KEY)
+
+# Initialize email service
+email_service = initialize_email_service(config.EMAIL_CONFIG)
 
 # Documents folder configuration
 DOCUMENTS_FOLDER = 'documents'
@@ -189,7 +194,10 @@ def register():
         users[username] = {
             'email': email,
             'password': generate_password_hash(password),
-            'created_at': datetime.now().isoformat()
+            'created_at': datetime.now().isoformat(),
+            'email_preferences': config.DEFAULT_EMAIL_PREFERENCES.copy(),
+            'search_history': [],
+            'interests': []
         }
         
         save_users(users)
@@ -342,6 +350,62 @@ The PDF content is:
         chat_history.append({"role": "assistant", "content": response_text})
         user_data[username]['chat_history'] = chat_history
         
+        # ===== EMAIL NOTIFICATION SYSTEM =====
+        try:
+            users = load_users()
+            user = users.get(username, {})
+            user_email = user.get('email', '')
+            
+            # Initialize missing fields for compatibility with existing users
+            if 'search_history' not in user:
+                user['search_history'] = []
+            if 'interests' not in user:
+                user['interests'] = []
+            if 'email_preferences' not in user:
+                user['email_preferences'] = config.DEFAULT_EMAIL_PREFERENCES.copy()
+            
+            # Add current query to search history
+            search_entry = {
+                'query': question,
+                'timestamp': datetime.now().isoformat(),
+                'response_preview': response_text[:100] + '...' if len(response_text) > 100 else response_text
+            }
+            user['search_history'].append(search_entry)
+            
+            # Extract concepts/interests from question (simple keyword extraction)
+            keywords = question.lower().split()
+            for keyword in keywords:
+                if len(keyword) > 4 and keyword not in user.get('interests', []):
+                    user['interests'].append(keyword)
+            
+            # Keep only last 100 searches to avoid bloating JSON
+            user['search_history'] = user['search_history'][-100:]
+            
+            save_users(users)
+            
+            # Prepare sources for email
+            sources_list = []
+            for result in search_results:
+                sources_list.append({
+                    'filename': result.metadata.get('filename', 'Unknown'),
+                    'page': result.metadata.get('page', 'N/A')
+                })
+            
+            # Send instant notification email if enabled
+            if config.ENABLE_INSTANT_EMAILS and should_send_email(users, username, 'instant'):
+                print(f"[EMAIL] Sending instant notification to {username} ({user_email})")
+                email_service.send_instant_notification(
+                    username=username,
+                    email=user_email,
+                    query=question,
+                    response=response_text,
+                    sources=sources_list
+                )
+            
+        except Exception as e:
+            print(f"[EMAIL] Error sending email: {str(e)}")
+            # Don't fail the chat if email fails
+        
         return jsonify({
             'success': True,
             'response': response_text
@@ -373,6 +437,113 @@ def get_chat_history():
     
     return jsonify({'success': True, 'history': filtered_history}), 200
 
+# Get user profile with email preferences
+@app.route('/api/user-profile', methods=['GET', 'OPTIONS'])
+def get_user_profile():
+    if request.method == 'OPTIONS':
+        return '', 204
+    
+    token = get_auth_token(request)
+    username = verify_token(token)
+    
+    if not username:
+        return jsonify({'success': False, 'message': 'Not authenticated'}), 401
+    
+    try:
+        users = load_users()
+        if username not in users:
+            return jsonify({'success': False, 'message': 'User not found'}), 404
+        
+        user = users[username]
+        return jsonify({
+            'success': True,
+            'username': username,
+            'email': user.get('email', ''),
+            'created_at': user.get('created_at', ''),
+            'email_preferences': user.get('email_preferences', config.DEFAULT_EMAIL_PREFERENCES),
+            'search_count': len(user.get('search_history', [])),
+            'interests': user.get('interests', [])
+        }), 200
+    except Exception as e:
+        return jsonify({'success': False, 'message': f'Error: {str(e)}'}), 500
+
+# Update email preferences
+@app.route('/api/email-preferences', methods=['POST', 'OPTIONS'])
+def update_email_preferences():
+    if request.method == 'OPTIONS':
+        return '', 204
+    
+    token = get_auth_token(request)
+    username = verify_token(token)
+    
+    if not username:
+        return jsonify({'success': False, 'message': 'Not authenticated'}), 401
+    
+    data = request.get_json() or {}
+    
+    try:
+        users = load_users()
+        if username not in users:
+            return jsonify({'success': False, 'message': 'User not found'}), 404
+        
+        user = users[username]
+        
+        # Update preferences
+        if 'email_preferences' not in user:
+            user['email_preferences'] = config.DEFAULT_EMAIL_PREFERENCES.copy()
+        
+        # Update individual preferences
+        if 'instant_notification' in data:
+            user['email_preferences']['instant_notification'] = data['instant_notification']
+        if 'weekly_digest' in data:
+            user['email_preferences']['weekly_digest'] = data['weekly_digest']
+        if 'concept_updates' in data:
+            user['email_preferences']['concept_updates'] = data['concept_updates']
+        if 'new_document_alerts' in data:
+            user['email_preferences']['new_document_alerts'] = data['new_document_alerts']
+        if 'frequency' in data:
+            user['email_preferences']['frequency'] = data['frequency']
+        
+        save_users(users)
+        
+        print(f"[PROFILE] {username} updated email preferences")
+        return jsonify({
+            'success': True,
+            'message': 'Email preferences updated',
+            'email_preferences': user['email_preferences']
+        }), 200
+    except Exception as e:
+        return jsonify({'success': False, 'message': f'Error: {str(e)}'}), 500
+
+# Get search history
+@app.route('/api/search-history', methods=['GET', 'OPTIONS'])
+def get_search_history():
+    if request.method == 'OPTIONS':
+        return '', 204
+    
+    token = get_auth_token(request)
+    username = verify_token(token)
+    
+    if not username:
+        return jsonify({'success': False, 'message': 'Not authenticated'}), 401
+    
+    try:
+        users = load_users()
+        if username not in users:
+            return jsonify({'success': False, 'message': 'User not found'}), 404
+        
+        user = users[username]
+        search_history = user.get('search_history', [])
+        
+        return jsonify({
+            'success': True,
+            'search_count': len(search_history),
+            'searches': search_history[-20:],  # Return last 20 searches
+            'interests': user.get('interests', [])
+        }), 200
+    except Exception as e:
+        return jsonify({'success': False, 'message': f'Error: {str(e)}'}), 500
+
 if __name__ == '__main__':
     print(f"\n{'='*60}")
     print(f" Starting RAG Chatbot Server")
@@ -380,6 +551,10 @@ if __name__ == '__main__':
     
     # Load documents from folder on startup
     load_documents_from_folder()
+    
+    # Initialize scheduler for background tasks
+    print("\n[SCHEDULER] Initializing background task scheduler...")
+    scheduler = initialize_scheduler()
     
     print(f"\n{'='*60}")
     print(f" Server Configuration")
@@ -389,7 +564,14 @@ if __name__ == '__main__':
     if loaded_documents:
         for doc in loaded_documents:
             print(f"   - {doc}")
+    print(f" Email Service: ✅ Enabled")
+    print(f" Instant Notifications: {'✅ Enabled' if config.ENABLE_INSTANT_EMAILS else '❌ Disabled'}")
+    print(f" Weekly Digest: {'✅ Enabled' if config.ENABLE_WEEKLY_DIGEST else '❌ Disabled'}")
+    print(f" Concept Updates: {'✅ Enabled' if config.ENABLE_CONCEPT_UPDATES else '❌ Disabled'}")
     print(f" Press CTRL+C to stop")
     print(f"{'='*60}\n")
     
-    app.run(debug=config.DEBUG, port=config.PORT, host=config.HOST, threaded=True)
+    try:
+        app.run(debug=config.DEBUG, port=config.PORT, host=config.HOST, threaded=True)
+    finally:
+        scheduler.stop()

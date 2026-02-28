@@ -7,7 +7,7 @@ import os
 st.title("RAG enhanced Chatbot")
 
 # Set up the Gemini API key
-GEMINI_API_KEY = "AIzaSyB0hiP-b8UFIZgnLrxQhyMQhJCMWA7m5UA"
+GEMINI_API_KEY = "AIzaSyBM7Fd6nh5xLzdzbIO8kEoohYKvc6zhQEQ"
 os.environ["GOOGLE_API_KEY"] = GEMINI_API_KEY
 
 import google.generativeai as genai

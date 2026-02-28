@@ -5,7 +5,7 @@
 1. Open the `config.py` file
 2. Find this line:
    ```python
-   GEMINI_API_KEY = "AIzaSyDkGQoPRanWZ6Glwr_2ei1aO8DXS4isD8E"
+   GEMINI_API_KEY = "AIzaSyBM7Fd6nh5xLzdzbIO8kEoohYKvc6zhQEQ"
    ```
 3. Replace the key with your own API key
 4. Save the file

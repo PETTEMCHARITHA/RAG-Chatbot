@@ -12,3 +12,4 @@ langchain-huggingface
 huggingface-hub
 sentence-transformers
 google-generativeai
+apscheduler
